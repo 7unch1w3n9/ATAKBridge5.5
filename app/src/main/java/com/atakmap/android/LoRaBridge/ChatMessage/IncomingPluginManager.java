@@ -5,6 +5,7 @@ import android.util.Log;
 
 import com.atakmap.android.LoRaBridge.Database.ChatMessageEntity;
 import com.atakmap.android.chat.GeoChatConnector;
+import com.atakmap.android.contact.Contact;
 import com.atakmap.android.contact.Contacts;
 import com.atakmap.android.contact.GroupContact;
 import com.atakmap.android.contact.IndividualContact;
@@ -47,16 +48,69 @@ public class IncomingPluginManager {
      * @param event CoT event that should be dispatched through the ATAK CoT pipeline
      */
     public void sendToGeoChat(CotEvent event, Bundle extras) {
-        if(Contacts.getInstance().getContactByUuid(event.getDetail().getFirstChildByName(0, "link").getAttribute("uid"))==null){
+        try {
+            CotDetail chat = event.getDetail().getFirstChildByName(0, "__chat");
+            if (chat == null) {
+                Log.w(TAG, "No __chat detail found");
+                return;
+            }
+
+            String receiverUid = chat.getAttribute("id");
+            String receiverCallsign = chat.getAttribute("chatroom");
+
+            if (receiverUid == null || receiverUid.isEmpty()) {
+                Log.w(TAG, "No receiver UID found");
+                return;
+            }
+
             Contacts contacts = Contacts.getInstance();
-            GroupContact root = contacts.getRootGroup();
+            Contact existingContact = contacts.getContactByUuid(receiverUid);
 
-            IndividualContact newContact = new IndividualContact( event.getDetail().getFirstChildByName(0, "__chat").getAttribute("senderCallsign"), event.getDetail().getFirstChildByName(0, "link").getAttribute("uid"));
+            if (existingContact == null) {
+                if (receiverCallsign == null || receiverCallsign.isEmpty()) {
+                    receiverCallsign = receiverUid;
+                }
 
-            contacts.addContact(root, newContact);
+                IndividualContact newContact = new IndividualContact(
+                        receiverCallsign,
+                        receiverUid
+                );
+
+                // 直接用 GeoChatConnector!
+                NetConnectString ncs = new NetConnectString(
+                        "udp",                    // protocol
+                        "224.10.10.1",           // 假地址,系统能接受
+                        17012                     // 端口
+                );
+                GeoChatConnector geochatConnector = new GeoChatConnector(ncs);
+                newContact.addConnector(geochatConnector);
+
+                GroupContact root = contacts.getRootGroup();
+                contacts.addContact(root, newContact);
+
+                Log.d(TAG, "Created new contact with GeoChatConnector: " +
+                        receiverCallsign + " (" + receiverUid + ")");
+            } else if (existingContact instanceof IndividualContact) {
+                IndividualContact ic = (IndividualContact) existingContact;
+
+                if (ic.getConnector("connector.geochat") == null) {
+                    NetConnectString ncs = new NetConnectString(
+                            "udp",
+                            "224.10.10.1",
+                            17012
+                    );
+                    GeoChatConnector geochatConnector = new GeoChatConnector(ncs);
+                    ic.addConnector(geochatConnector);
+                    Log.d(TAG, "Added GeoChatConnector to existing contact: " + receiverUid);
+                }
+            }
+
+            CotMapComponent.getInternalDispatcher().dispatch(event, extras);
+            Log.d(TAG, "Message dispatched to GeoChat");
+
+        } catch (Exception e) {
+            Log.e(TAG, "Error in sendToGeoChat", e);
         }
-        CotMapComponent.getInternalDispatcher().dispatch(event, extras);
-        Log.d(TAG, "Message dispatched to GeoChat");
     }
 
     /**
@@ -99,7 +153,7 @@ public class IncomingPluginManager {
         CoordinatedTime now = new CoordinatedTime();
 
         // CoT UID: includes sender callsign, receiver UID and message id
-        event.setUID("PluginMsg." + message.getSenderCallsign()
+        event.setUID("PluginMsg." + message.getSenderUid()
                 + "." + message.getReceiverUid()
                 + "." + message.getId());
         event.setType("b-t-f");
@@ -127,6 +181,7 @@ public class IncomingPluginManager {
         chat.setAttribute("chatroom", message.getReceiverCallsign());
         chat.setAttribute("id", message.getReceiverUid());
         chat.setAttribute("senderCallsign", message.getSenderCallsign());
+        chat.setAttribute("sender", message.getSenderUid());
         detail.addChild(chat);
 
         // chatgrp: sender and receiver UIDs

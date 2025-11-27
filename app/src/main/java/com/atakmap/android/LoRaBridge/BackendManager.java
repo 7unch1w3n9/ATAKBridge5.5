@@ -1,12 +1,17 @@
 package com.atakmap.android.LoRaBridge;
 
 import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.Context;
+import android.content.Intent;
 import android.hardware.usb.UsbDeviceConnection;
+import android.os.Bundle;
 
+import com.atakmap.android.LoRaBridge.ChatMessage.ChatMessageFactory;
 import com.atakmap.android.LoRaBridge.ChatMessage.IncomingGeoChatListener;
 import com.atakmap.android.LoRaBridge.ChatMessage.MessageDatenbankObserver;
 import com.atakmap.android.LoRaBridge.ChatMessage.OutgoingCoTEventInterceptor;
+import com.atakmap.android.LoRaBridge.Database.ChatMessageEntity;
 import com.atakmap.android.LoRaBridge.JNI.FlowgraphEngine;
 import com.atakmap.android.LoRaBridge.JNI.PluginNativeLoader;
 import com.atakmap.android.LoRaBridge.JNI.UsbHackrfManager;
@@ -14,6 +19,7 @@ import com.atakmap.android.LoRaBridge.JNI.UsbHackrfManagerHolder;
 import com.atakmap.android.LoRaBridge.phy.UdpManager;
 import com.atakmap.android.LoRaBridge.ChatMessage.MessageSyncService;
 import com.atakmap.android.LoRaBridge.GenericMessage.CotSyncService;
+import com.atakmap.android.ipc.AtakBroadcast;
 import com.atakmap.android.maps.MapView;
 import com.atakmap.comms.CommsMapComponent;
 import com.atakmap.coremap.log.Log;
@@ -26,6 +32,8 @@ public class BackendManager {
     private UsbHackrfManager usbMgr;
     private volatile boolean started = false;
     private IncomingGeoChatListener incomingGeoChatListener;
+
+    private BroadcastReceiver geoChatMessageReceiver;
     private MessageDatenbankObserver messageDatenbankObserver;
     public BackendManager(Context appContext, Activity hostActivity) {
         this.appContext = appContext.getApplicationContext();
@@ -77,6 +85,34 @@ public class BackendManager {
         );
         Log.d(TAG, "Backend manager started.");
         started = true;
+
+        if (geoChatMessageReceiver == null) {
+            geoChatMessageReceiver = new BroadcastReceiver() {
+                public void onReceive(Context context, Intent intent) {
+                    String action = intent.getAction();
+                    if ("com.atakmap.chatmessage.persistmessage".equals(action)) {
+                        Bundle chatBundle = intent.getBundleExtra("chat_bundle");
+                        if (chatBundle != null) {
+                            Log.d(TAG, "Intercepted GeoChat message!");
+                            handleOutgoingGeoChatMessage(chatBundle);
+                        }
+                    }
+                }
+            };
+
+            AtakBroadcast.DocumentedIntentFilter filter =
+                    new AtakBroadcast.DocumentedIntentFilter();
+            filter.addAction("com.atakmap.chatmessage.persistmessage");
+            AtakBroadcast.getInstance().registerReceiver(geoChatMessageReceiver, filter);
+        }
+    }
+
+    private void handleOutgoingGeoChatMessage(Bundle bundle) {
+        // 转换 Bundle -> ChatMessageEntity
+        ChatMessageEntity entity = ChatMessageFactory.fromBundle(bundle);
+        if (entity != null && "Plugin".equals(entity.getOrigin())) {
+            syncService.processOutgoingMessage(entity);
+        }
     }
 
     public synchronized void stop() {
@@ -103,6 +139,11 @@ public class BackendManager {
 
         started = false;
         Log.d(TAG, "Backend manager stopped.");
+
+        if (geoChatMessageReceiver != null) {
+            AtakBroadcast.getInstance().unregisterReceiver(geoChatMessageReceiver);
+            geoChatMessageReceiver = null;
+        }
     }
 
     public synchronized void destroy() {

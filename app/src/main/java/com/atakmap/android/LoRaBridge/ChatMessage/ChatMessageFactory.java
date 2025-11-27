@@ -1,8 +1,10 @@
 package com.atakmap.android.LoRaBridge.ChatMessage;
 
+import android.os.Bundle;
 import android.util.Log;
 
 import com.atakmap.android.LoRaBridge.Database.ChatMessageEntity;
+import com.atakmap.android.maps.MapView;
 import com.atakmap.coremap.cot.event.CotEvent;
 import com.atakmap.coremap.cot.event.CotDetail;
 
@@ -116,10 +118,10 @@ public class ChatMessageFactory {
                 senderCallsign = chatNode.getAttribute("senderCallsign");
 
                 // sender UID: link.uid if available, otherwise senderCallsign
-                senderUid =  detail.getFirstChildByName(0, "link").getAttribute("uid") == null
-                        ? detail.getFirstChildByName(0, "link").getAttribute("uid")
-                        : chatNode.getAttribute("senderCallsign");
-
+                CotDetail linkNode = detail.getFirstChildByName(0, "link");
+                senderUid = (linkNode != null && linkNode.getAttribute("uid") != null)
+                        ? linkNode.getAttribute("uid")
+                        : chatNode.getAttribute("sender");
                 message = chatNode.getAttribute("message");
             }
 
@@ -193,6 +195,49 @@ public class ChatMessageFactory {
             );
         } catch (Exception e) {
             Log.e("ChatMessageFactory", "Error parsing CoT event", e);
+            return null;
+        }
+    }
+
+    /**
+     * Convert a Bundle (from GeoChat) into ChatMessageEntity
+     */
+    public static ChatMessageEntity fromBundle(Bundle bundle) {
+        try {
+            String id = bundle.getString("messageId");
+            String senderUid = bundle.getString("senderUid");
+            String senderCallsign = bundle.getString("senderCallsign");
+            String receiverUid = bundle.getString("conversationId");
+            String receiverCallsign = bundle.getString("conversationName");
+            String message = bundle.getString("message");
+            long sentTime = bundle.getLong("sentTime", System.currentTimeMillis());
+
+            SimpleDateFormat sdf = new SimpleDateFormat(
+                    "yyyy-MM-dd'T'HH:mm:ss.SSS'Z'",
+                    Locale.US
+            );
+            sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
+            String timestamp = sdf.format(new Date(sentTime));
+
+            String origin = "GeoChat";
+            if (senderUid != null && senderUid.equals(MapView.getDeviceUid())) {
+                origin = "Plugin";
+            }
+
+            return new ChatMessageEntity(
+                    id != null ? id : UUID.randomUUID().toString(),
+                    senderUid,
+                    senderCallsign,
+                    receiverUid,
+                    receiverCallsign,
+                    message,
+                    timestamp,
+                    "text",
+                    origin,
+                    null
+            );
+        } catch (Exception e) {
+            Log.e("ChatMessageFactory", "Error converting Bundle", e);
             return null;
         }
     }
