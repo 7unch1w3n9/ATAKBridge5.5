@@ -1,0 +1,20 @@
+# Gradle 文件
+.gradle/
+build/
+local.properties
+
+# IDE 文件
+.idea/
+*.iml
+.DS_Store
+
+# APK 文件
+*.apk
+
+# 编译产物
+bin/
+gen/
+out/
+
+# JNI Libraries
+app/src/main/jniLibs/
