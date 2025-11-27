@@ -7,7 +7,6 @@ import com.atakmap.android.LoRaBridge.Database.ChatMessageEntity;
 import com.atakmap.android.chat.GeoChatConnector;
 import com.atakmap.android.contact.Contact;
 import com.atakmap.android.contact.Contacts;
-import com.atakmap.android.contact.GroupContact;
 import com.atakmap.android.contact.IndividualContact;
 import com.atakmap.android.cot.CotMapComponent;
 import com.atakmap.android.maps.MapView;
@@ -45,79 +44,166 @@ public class IncomingPluginManager {
      * Entry point for sending a CoT event into GeoChat.
      * This method assumes that the event is already fully constructed.
      *
+     * Strategy:
+     *  - For incoming messages (where I am the receiver), create the sender's contact
+     *  - For outgoing messages (where I am the sender), assume receiver contact already exists
+     *  - Dispatch the event through ATAK's internal CoT pipeline
+     *
      * @param event CoT event that should be dispatched through the ATAK CoT pipeline
+     * @param extras Optional bundle with additional dispatch metadata
      */
     public void sendToGeoChat(CotEvent event, Bundle extras) {
         try {
+            String myUid = MapView.getDeviceUid().trim();
+
             CotDetail chat = event.getDetail().getFirstChildByName(0, "__chat");
             if (chat == null) {
-                Log.w(TAG, "No __chat detail found");
+                Log.w(TAG, "No __chat detail found in CoT event");
                 return;
             }
 
+            // Trim all UIDs to avoid whitespace issues
+            String senderUid = chat.getAttribute("sender");
             String receiverUid = chat.getAttribute("id");
-            String receiverCallsign = chat.getAttribute("chatroom");
 
-            if (receiverUid == null || receiverUid.isEmpty()) {
-                Log.w(TAG, "No receiver UID found");
-                return;
+            if (senderUid != null) senderUid = senderUid.trim();
+            if (receiverUid != null) receiverUid = receiverUid.trim();
+
+            Log.d(TAG, "========== sendToGeoChat ==========");
+            Log.d(TAG, "Sender UID: '" + senderUid + "' (len=" + (senderUid != null ? senderUid.length() : 0) + ")");
+            Log.d(TAG, "Receiver UID: '" + receiverUid + "' (len=" + (receiverUid != null ? receiverUid.length() : 0) + ")");
+            Log.d(TAG, "My UID: '" + myUid + "' (len=" + myUid.length() + ")");
+
+            // Only create contact when I am the receiver (incoming message)
+            if (receiverUid != null && receiverUid.equals(myUid)) {
+                String senderCallsign = chat.getAttribute("senderCallsign");
+                if (senderCallsign != null) senderCallsign = senderCallsign.trim();
+
+                ensureContactExists(senderUid, senderCallsign);
+                Log.d(TAG, "✓ INCOMING message from: " + senderCallsign + " (" + senderUid + ")");
+            } else {
+                // I am the sender - receiver contact should already exist
+                String chatroom = chat.getAttribute("chatroom");
+                Log.d(TAG, "✓ OUTGOING message to: " + chatroom + " (" + receiverUid + ")");
             }
 
-            Contacts contacts = Contacts.getInstance();
-            Contact existingContact = contacts.getContactByUuid(receiverUid);
-
-            if (existingContact == null) {
-                if (receiverCallsign == null || receiverCallsign.isEmpty()) {
-                    receiverCallsign = receiverUid;
-                }
-
-                IndividualContact newContact = new IndividualContact(
-                        receiverCallsign,
-                        receiverUid
-                );
-
-                // 直接用 GeoChatConnector!
-                NetConnectString ncs = new NetConnectString(
-                        "udp",                    // protocol
-                        "224.10.10.1",           // 假地址,系统能接受
-                        17012                     // 端口
-                );
-                GeoChatConnector geochatConnector = new GeoChatConnector(ncs);
-                newContact.addConnector(geochatConnector);
-
-                GroupContact root = contacts.getRootGroup();
-                contacts.addContact(root, newContact);
-
-                Log.d(TAG, "Created new contact with GeoChatConnector: " +
-                        receiverCallsign + " (" + receiverUid + ")");
-            } else if (existingContact instanceof IndividualContact) {
-                IndividualContact ic = (IndividualContact) existingContact;
-
-                if (ic.getConnector("connector.geochat") == null) {
-                    NetConnectString ncs = new NetConnectString(
-                            "udp",
-                            "224.10.10.1",
-                            17012
-                    );
-                    GeoChatConnector geochatConnector = new GeoChatConnector(ncs);
-                    ic.addConnector(geochatConnector);
-                    Log.d(TAG, "Added GeoChatConnector to existing contact: " + receiverUid);
-                }
-            }
-
+            // Dispatch to ATAK's CoT system
             CotMapComponent.getInternalDispatcher().dispatch(event, extras);
-            Log.d(TAG, "Message dispatched to GeoChat");
+            Log.d(TAG, "✓ Message dispatched to GeoChat");
+            Log.d(TAG, "===================================");
 
         } catch (Exception e) {
             Log.e(TAG, "Error in sendToGeoChat", e);
+            e.printStackTrace();
         }
+    }
+
+    /**
+     * Ensure a contact exists in ATAK's contact list.
+     *
+     * Strategy:
+     *  1. First try to find by UID
+     *  2. If not found by UID, try to find by callsign (avoid duplicates)
+     *  3. If found by callsign but UID mismatch, use existing contact
+     *  4. If not found at all, create new contact
+     *  5. Always ensure GeoChatConnector is present
+     *
+     * Note: Contact is created without MapItem (chat-only functionality).
+     *       If you need the contact to appear on the map, you'll need to
+     *       send position CoT events separately.
+     *
+     * @param uid Contact's unique identifier
+     * @param callsign Contact's display name
+     */
+    private void ensureContactExists(String uid, String callsign) {
+        if (uid == null || uid.isEmpty()) {
+            Log.w(TAG, "⚠ Cannot create contact: UID is null or empty");
+            return;
+        }
+
+        // Trim inputs
+        uid = uid.trim();
+        if (callsign != null) callsign = callsign.trim();
+
+        Log.d(TAG, "========== ensureContactExists ==========");
+        Log.d(TAG, "Requested UID: '" + uid + "'");
+        Log.d(TAG, "Requested Callsign: '" + callsign + "'");
+
+        Contacts contacts = Contacts.getInstance();
+        Contact existing = null;
+        boolean foundByCallsign = false;
+
+        // Step 1: Try to find by UID
+        existing = contacts.getContactByUuid(uid);
+
+        // Step 2: If not found by UID, try to find by callsign
+        if (existing == null && callsign != null && !callsign.isEmpty()) {
+            Log.d(TAG, "Contact not found by UID, trying callsign...");
+            existing = contacts.getFirstContactWithCallsign(callsign);
+
+            if (existing != null) {
+                foundByCallsign = true;
+                Log.w(TAG, "⚠ Found contact by callsign but UID mismatch!");
+                Log.w(TAG, "  Requested UID: " + uid);
+                Log.w(TAG, "  Existing UID: " + existing.getUID());
+                Log.w(TAG, "  → Using existing contact to avoid duplicates");
+            }
+        }
+
+        // Step 3: If contact found (either by UID or callsign)
+        if (existing != null) {
+            if (existing instanceof IndividualContact) {
+                IndividualContact ic = (IndividualContact) existing;
+
+                Log.d(TAG, "✓ Contact already exists:");
+                Log.d(TAG, "  Name: " + ic.getName());
+                Log.d(TAG, "  UID: " + ic.getUID());
+
+                // Ensure GeoChatConnector is present
+                if (ic.getConnector("connector.geochat") == null) {
+                    NetConnectString ncs = new NetConnectString("udp", "224.10.10.1", 17012);
+                    ic.addConnector(new GeoChatConnector(ncs));
+                    Log.d(TAG, "✓ Added GeoChatConnector to existing contact");
+                } else {
+                    Log.d(TAG, "✓ GeoChatConnector already exists");
+                }
+            } else {
+                Log.w(TAG, "⚠ Contact exists but is not IndividualContact: " + existing.getClass().getName());
+            }
+
+            Log.d(TAG, "=========================================");
+            return;
+        }
+
+        // Step 4: Contact not found - create new one
+        Log.d(TAG, "Contact does not exist, creating new one...");
+
+        if (callsign == null || callsign.isEmpty()) {
+            callsign = uid;
+        }
+
+        // Create contact without MapItem (sufficient for chat functionality)
+        IndividualContact newContact = new IndividualContact(callsign, uid);
+
+        // Add GeoChatConnector
+        NetConnectString ncs = new NetConnectString("udp", "224.10.10.1", 17012);
+        newContact.addConnector(new GeoChatConnector(ncs));
+
+        // Add to root contact group
+        contacts.addContact(contacts.getRootGroup(), newContact);
+
+        Log.d(TAG, "✓ Created new contact:");
+        Log.d(TAG, "  Name: " + callsign);
+        Log.d(TAG, "  UID: " + uid);
+        Log.d(TAG, "  Note: Contact is created without map marker (chat-only)");
+        Log.d(TAG, "=========================================");
     }
 
     /**
      * Convert a ChatMessageEntity into a GeoChat compatible CoT event.
      *
      * Mapping summary:
-     *  - event.uid          = "PluginMsg.<senderCallsign>.<receiverUid>.<messageId>"
+     *  - event.uid          = "GeoChat.<senderUid>.<receiverUid>.<messageId>"
      *  - event.type         = "b-t-f" (generic text message)
      *  - event.how          = "h-g-i-g-o"
      *  - event.time/start   = now
@@ -126,8 +212,9 @@ public class IncomingPluginManager {
      *
      * Detail children:
      *  - <__chat>
+     *      sender           = sender UID
      *      id               = receiver UID
-     *      chatroom         = receiver callsign
+     *      chatroom         = conversation partner's callsign (changes based on direction)
      *      messageId        = message id
      *      senderCallsign   = sender callsign
      *  - <chatgrp>
@@ -144,18 +231,45 @@ public class IncomingPluginManager {
      *      time             = current CoordinatedTime string
      *      inner text       = message content
      *
+     * Note on chatroom field:
+     *  - If outgoing (I sent it): chatroom = receiver's callsign
+     *  - If incoming (I received it): chatroom = sender's callsign
+     *  - This ensures chatroom always points to the conversation partner
+     *
      * @param message ChatMessageEntity to convert
      * @return Fully populated CoT event representing this message
      */
     public CotEvent convertChatMessageToCotEvent(ChatMessageEntity message) {
-
         CotEvent event = new CotEvent();
         CoordinatedTime now = new CoordinatedTime();
 
-        // CoT UID: includes sender callsign, receiver UID and message id
-        event.setUID("PluginMsg." + message.getSenderUid()
-                + "." + message.getReceiverUid()
-                + "." + message.getId());
+        String myUid = MapView.getDeviceUid().trim();
+
+        // Trim all fields from the message entity
+        String senderUid = message.getSenderUid();
+        String senderCallsign = message.getSenderCallsign();
+        String receiverUid = message.getReceiverUid();
+        String receiverCallsign = message.getReceiverCallsign();
+        String messageText = message.getMessage();
+        String messageId = message.getId();
+
+        if (senderUid != null) senderUid = senderUid.trim();
+        if (senderCallsign != null) senderCallsign = senderCallsign.trim();
+        if (receiverUid != null) receiverUid = receiverUid.trim();
+        if (receiverCallsign != null) receiverCallsign = receiverCallsign.trim();
+        if (messageText != null) messageText = messageText.trim();
+        if (messageId != null) messageId = messageId.trim();
+
+        // Determine message direction
+        boolean isOutgoing = senderUid.equals(myUid);
+
+        // chatroom = conversation partner's callsign (not myself)
+        String conversationPartner = isOutgoing
+                ? receiverCallsign  // I sent it → partner is receiver
+                : senderCallsign;    // I received it → partner is sender
+
+        // Event metadata
+        event.setUID("GeoChat." + senderUid + "." + receiverUid + "." + messageId);
         event.setType("b-t-f");
         event.setHow("h-g-i-g-o");
         event.setTime(now);
@@ -177,51 +291,51 @@ public class IncomingPluginManager {
         CotDetail chat = new CotDetail("__chat");
         chat.setAttribute("parent", "RootContactGroup");
         chat.setAttribute("groupOwner", "false");
-        chat.setAttribute("messageId", message.getId());
-        chat.setAttribute("chatroom", message.getReceiverCallsign());
-        chat.setAttribute("id", message.getReceiverUid());
-        chat.setAttribute("senderCallsign", message.getSenderCallsign());
-        chat.setAttribute("sender", message.getSenderUid());
+        chat.setAttribute("sender", senderUid);
+        chat.setAttribute("messageId", messageId);
+        chat.setAttribute("chatroom", conversationPartner);
+        chat.setAttribute("id", receiverUid);
+        chat.setAttribute("senderCallsign", senderCallsign);
         detail.addChild(chat);
 
         // chatgrp: sender and receiver UIDs
         CotDetail chatgrp = new CotDetail("chatgrp");
-        chatgrp.setAttribute("uid0", message.getSenderUid());   // sender UID
-        chatgrp.setAttribute("uid1", message.getReceiverUid()); // receiver UID
-        chatgrp.setAttribute("id", message.getReceiverUid());   // kept consistent with __chat@id
+        chatgrp.setAttribute("uid0", senderUid);
+        chatgrp.setAttribute("uid1", receiverUid);
+        chatgrp.setAttribute("id", receiverUid);
         chat.addChild(chatgrp);
 
         // __lora: plugin specific metadata for deduplication and origin tracking
         CotDetail loraDetail = new CotDetail("__lora");
-        loraDetail.setAttribute("originalId", message.getId());
+        loraDetail.setAttribute("originalId", messageId);
         loraDetail.setAttribute("origin", "Plugin");
         detail.addChild(loraDetail);
 
         // link: link between CoT entity and sender UID
         CotDetail link = new CotDetail("link");
-        link.setAttribute("uid", message.getSenderUid());
+        link.setAttribute("uid", senderUid);
         link.setAttribute("type", "a-f-G-U-C");
         link.setAttribute("relation", "p-p");
         detail.addChild(link);
 
         // remarks: actual text content and meta fields
         CotDetail remarks = new CotDetail("remarks");
-        remarks.setAttribute("source", "BAO.F.ATAK." + message.getSenderUid());
-        remarks.setAttribute("to", message.getReceiverUid());
+        remarks.setAttribute("source", "BAO.F.ATAK." + senderUid);
+        remarks.setAttribute("to", receiverUid);
         remarks.setAttribute("time", now.toString());
-        remarks.setInnerText(message.getMessage());
+        remarks.setInnerText(messageText);
         detail.addChild(remarks);
 
         event.setDetail(detail);
 
         // Debug output
-        com.atakmap.coremap.log.Log.d("LoRaBridge", "Convert message to CoT Event:");
-        com.atakmap.coremap.log.Log.d("LoRaBridge", "  UID: " + event.getUID());
-        com.atakmap.coremap.log.Log.d("LoRaBridge", "  Type: " + event.getType());
-        com.atakmap.coremap.log.Log.d("LoRaBridge", "  Sender: " +
-                event.getDetail().getFirstChildByName(0, "__chat").getAttribute("sender"));
-        com.atakmap.coremap.log.Log.d("LoRaBridge", "  Message: " + message.getMessage());
-        com.atakmap.coremap.log.Log.d("LoRaBridge", "  Detail XML: " + detail);
+        Log.d(TAG, "========== CoT Conversion ==========");
+        Log.d(TAG, "Direction: " + (isOutgoing ? "OUTGOING" : "INCOMING"));
+        Log.d(TAG, "Sender: '" + senderCallsign + "' ('" + senderUid + "')");
+        Log.d(TAG, "Receiver: '" + receiverCallsign + "' ('" + receiverUid + "')");
+        Log.d(TAG, "Chatroom (conversation partner): '" + conversationPartner + "'");
+        Log.d(TAG, "Message: '" + messageText + "'");
+        Log.d(TAG, "====================================");
 
         return event;
     }

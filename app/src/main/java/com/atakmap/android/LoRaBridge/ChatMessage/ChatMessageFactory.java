@@ -51,6 +51,13 @@ public class ChatMessageFactory {
             String message,
             String messageType
     ) {
+        senderUid = senderUid != null ? senderUid.trim() : null;
+        senderCallsign = senderCallsign != null ? senderCallsign.trim() : null;
+        receiverUid = receiverUid != null ? receiverUid.trim() : null;
+        receiverCallsign = receiverCallsign != null ? receiverCallsign.trim() : null;
+        message = message != null ? message.trim() : null;
+        messageType = messageType != null ? messageType.trim() : "text";
+
         SimpleDateFormat sdf =
                 new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
         sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
@@ -92,107 +99,140 @@ public class ChatMessageFactory {
         if (event == null) return null;
 
         try {
-            CotDetail detail = event.getDetail();
+            String myUid = MapView.getDeviceUid();  // 本机 UID
 
-            String origin = null;
+            CotDetail detail = event.getDetail();
             CotDetail chatNode = detail.getFirstChildByName(0, "__chat");
             CotDetail loraNode = detail.getFirstChildByName(0, "__lora");
 
-            // Determine origin
-            if (loraNode != null) {
-                origin = loraNode.getAttribute("origin");
-                // Ignore messages that the plugin originally generated
-                if ("Plugin".equals(origin)) {
-                    return null;
-                }
-            } else {
-                origin = "GeoChat";
+            // 检查 origin，忽略插件自己发送的回环消息
+            if (loraNode != null && "Plugin".equals(loraNode.getAttribute("origin"))) {
+                return null;
             }
 
-            String senderCallsign = null;
-            String senderUid = null;
-            String message = null;
+            // ========== 关键修复：正确提取发送者和接收者 ==========
 
-            // Prefer __chat node if present
-            if (chatNode != null) {
-                senderCallsign = chatNode.getAttribute("senderCallsign");
+            // 1. 提取 CoT 中声明的发送者和接收者
+            String cotSenderUid = chatNode.getAttribute("sender");
+            String cotReceiverUid = chatNode.getAttribute("id");
+            String senderCallsign = chatNode.getAttribute("senderCallsign");
 
-                // sender UID: link.uid if available, otherwise senderCallsign
+            // 如果 sender 字段缺失，尝试从 link 获取
+            if (cotSenderUid == null) {
                 CotDetail linkNode = detail.getFirstChildByName(0, "link");
-                senderUid = (linkNode != null && linkNode.getAttribute("uid") != null)
-                        ? linkNode.getAttribute("uid")
-                        : chatNode.getAttribute("sender");
-                message = chatNode.getAttribute("message");
-            }
-
-            // Fallback: use remarks text as message body
-            if (message == null) {
-                CotDetail remarksNode = detail.getFirstChildByName(0, "remarks");
-                if (remarksNode != null) {
-                    message = remarksNode.getInnerText();
+                if (linkNode != null) {
+                    cotSenderUid = linkNode.getAttribute("uid");
                 }
             }
 
-            // Determine receiver UID
-            String receiverUid;
-            if (toUIDs != null && toUIDs.length > 0) {
-                receiverUid = toUIDs[0];
+            // 2. 判断消息方向
+            boolean isOutgoing = cotSenderUid != null && cotSenderUid.equals(myUid);
+
+            String finalSenderUid;
+            String finalSenderCallsign;
+            String finalReceiverUid;
+            String finalReceiverCallsign;
+
+            if (isOutgoing) {
+                // 这是我发送的消息（可能是回环）
+                finalSenderUid = myUid;
+                finalSenderCallsign = senderCallsign != null
+                        ? senderCallsign
+                        : MapView.getMapView().getSelfMarker().getMetaString("callsign", myUid);
+
+                // 接收者是对方
+                finalReceiverUid = cotReceiverUid;
+                finalReceiverCallsign = chatNode.getAttribute("chatroom");
+
             } else {
-                // Fallback: extract "to" from remarks
-                assert chatNode != null;
-                CotDetail remarksNode = detail.getFirstChildByName(0, "remarks");
-                receiverUid = remarksNode.getAttribute("to");
+                // 这是对方发送给我的消息
+                finalSenderUid = cotSenderUid;
+                finalSenderCallsign = senderCallsign != null ? senderCallsign : cotSenderUid;
+
+                // 接收者是我
+                finalReceiverUid = myUid;
+                finalReceiverCallsign = MapView.getMapView().getSelfMarker().getMetaString("callsign", myUid);
             }
 
-            // Default receiver callsign to UID, then try to resolve via ATAK contacts
-            String receiverCallsign = receiverUid;
-            if (receiverUid != null) {
-                com.atakmap.android.contact.Contact contact =
-                        com.atakmap.android.contact.Contacts
-                                .getInstance()
-                                .getContactByUuid(receiverUid);
-                if (contact != null && contact.getName() != null) {
-                    receiverCallsign = contact.getName();
+            // 如果 toUIDs 被明确指定，使用它（优先级最高）
+            if (toUIDs != null && toUIDs.length > 0) {
+                finalReceiverUid = toUIDs[0];
+            }
+
+            // 尝试从 Contacts 解析接收者的真实 callsign
+            com.atakmap.android.contact.Contact contact =
+                    com.atakmap.android.contact.Contacts.getInstance()
+                            .getContactByUuid(finalReceiverUid);
+            if (contact != null && contact.getName() != null) {
+                finalReceiverCallsign = contact.getName();
+            }
+
+            // 提取消息内容
+            String message = null;
+            CotDetail remarksNode = detail.getFirstChildByName(0, "remarks");
+            if (remarksNode != null) {
+                message = remarksNode.getInnerText();
+            }
+
+            // 提取消息 ID
+            String messageId = chatNode.getAttribute("messageId");
+            if (messageId == null) {
+                if (loraNode != null) {
+                    messageId = loraNode.getAttribute("originalId");
                 }
             }
-
-            // Extract original message id if present (__lora.originalId)
-            String originalId = null;
-            if (loraNode != null) {
-                originalId = loraNode.getAttribute("originalId");
+            if (messageId == null) {
+                messageId = event.getUID();
             }
 
-            String messageId = (originalId != null)
-                    ? originalId
-                    : event.getUID();
-
-            String messageType = (chatNode != null)
-                    ? chatNode.getAttribute("messageType")
-                    : "text";
-
-            // Use event time if present, otherwise current time
-            SimpleDateFormat sdf =
-                    new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+            // 提取时间戳
+            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
             sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
-
             String timestamp = sdf.format(
                     event.getTime() != null
                             ? new Date(event.getTime().getMilliseconds())
                             : new Date()
             );
 
+            // 提取消息类型
+            String messageType = chatNode.getAttribute("messageType");
+            if (messageType == null) {
+                messageType = "text";
+            }
+
+            // 确定 origin
+            String origin = "GeoChat";
+            if (loraNode != null) {
+                String loraOrigin = loraNode.getAttribute("origin");
+                if (loraOrigin != null) {
+                    origin = loraOrigin;
+                }
+            }
+
+            // 详细日志输出
+            Log.d("ChatMessageFactory", "========== fromCotEvent ==========");
+            Log.d("ChatMessageFactory", "My UID: " + myUid);
+            Log.d("ChatMessageFactory", "CoT sender: " + cotSenderUid);
+            Log.d("ChatMessageFactory", "CoT receiver: " + cotReceiverUid);
+            Log.d("ChatMessageFactory", "Is outgoing: " + isOutgoing);
+            Log.d("ChatMessageFactory", "Final sender: " + finalSenderUid + " (" + finalSenderCallsign + ")");
+            Log.d("ChatMessageFactory", "Final receiver: " + finalReceiverUid + " (" + finalReceiverCallsign + ")");
+            Log.d("ChatMessageFactory", "Message: " + message);
+            Log.d("ChatMessageFactory", "===================================");
+
             return new ChatMessageEntity(
                     messageId,
-                    senderUid,
-                    senderCallsign != null ? senderCallsign : senderUid,
-                    receiverUid,
-                    receiverCallsign,
+                    finalSenderUid,
+                    finalSenderCallsign,
+                    finalReceiverUid,
+                    finalReceiverCallsign,
                     message,
                     timestamp,
                     messageType,
                     origin,
                     event.toString()
             );
+
         } catch (Exception e) {
             Log.e("ChatMessageFactory", "Error parsing CoT event", e);
             return null;
