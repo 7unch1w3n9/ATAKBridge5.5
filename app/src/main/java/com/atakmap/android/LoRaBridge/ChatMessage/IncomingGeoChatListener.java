@@ -83,14 +83,8 @@ public class IncomingGeoChatListener implements CotServiceRemote.CotEventListene
     public void onCotEvent(CotEvent cotEvent, Bundle bundle) {
 
         Log.d(TAG, "Remote CoT event received ------------------------------------");
-
-        // Temporary placeholder UID array (existing behavior preserved)
-        // TODO: integrate proper UID extraction for target recipients
-        String[] uids = new String[1];
-        uids[0] = "12324";
-
         // Forward to centralized synchronization logic
-        syncService.processIncomingCotEventFromGeoChat(cotEvent, uids);
+        syncService.processIncomingCotEventFromGeoChat(cotEvent, bundle);
     }
 
 

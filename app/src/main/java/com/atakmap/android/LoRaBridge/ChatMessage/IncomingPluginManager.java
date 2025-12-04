@@ -18,6 +18,8 @@ import com.atakmap.coremap.maps.conversion.EGM96;
 import com.atakmap.coremap.maps.coords.GeoPoint;
 import com.atakmap.coremap.maps.time.CoordinatedTime;
 
+import java.util.Objects;
+
 /**
  * IncomingPluginManager
  *
@@ -50,9 +52,9 @@ public class IncomingPluginManager {
      *  - Dispatch the event through ATAK's internal CoT pipeline
      *
      * @param event CoT event that should be dispatched through the ATAK CoT pipeline
-     * @param extras Optional bundle with additional dispatch metadata
+     *
      */
-    public void sendToGeoChat(CotEvent event, Bundle extras) {
+    public void sendToGeoChat(CotEvent event) {
         try {
             String myUid = MapView.getDeviceUid().trim();
 
@@ -88,7 +90,7 @@ public class IncomingPluginManager {
             }
 
             // Dispatch to ATAK's CoT system
-            CotMapComponent.getInternalDispatcher().dispatch(event, extras);
+            CotMapComponent.getInternalDispatcher().dispatch(event);
             Log.d(TAG, "✓ Message dispatched to GeoChat");
             Log.d(TAG, "===================================");
 
@@ -221,7 +223,7 @@ public class IncomingPluginManager {
      *      uid0             = sender UID
      *      uid1             = receiver UID
      *      id               = receiver UID
-     *  - <__lora>
+     *  - <__plugin>
      *      originalId       = message id
      *      origin           = "Plugin"
      *  - <link>
@@ -306,7 +308,7 @@ public class IncomingPluginManager {
         chat.addChild(chatgrp);
 
         // __lora: plugin specific metadata for deduplication and origin tracking
-        CotDetail loraDetail = new CotDetail("__lora");
+        CotDetail loraDetail = new CotDetail("__plugin");
         loraDetail.setAttribute("originalId", messageId);
         loraDetail.setAttribute("origin", "Plugin");
         detail.addChild(loraDetail);

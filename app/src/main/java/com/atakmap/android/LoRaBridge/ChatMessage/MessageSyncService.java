@@ -91,22 +91,22 @@ public class MessageSyncService {
      *
      * Security and filtering:
      *  - Rejects invalid CoT events.
-     *  - Skips messages that are already marked as plugin processed (__lora).
+     *  - Skips messages that are already marked as plugin processed (__plugin).
      *  - Distinguishes between self messages from GeoChat and other sources.
      *
      * @param event  raw CoT event
-     * @param toUIDs array of recipient UIDs resolved by the caller
+     * @param meta array of recipient UIDs resolved by the caller
      */
-    public void processIncomingCotEventFromGeoChat(CotEvent event, String[] toUIDs) {
+    public void processIncomingCotEventFromGeoChat(CotEvent event, Bundle meta) {
         if (!isValidGeoChatEvent(event)) return;
 
-        CotDetail lora = event.getDetail().getFirstChildByName(0, "__lora");
+        CotDetail lora = event.getDetail().getFirstChildByName(0, "__plugin");
         if (lora != null) {
             Log.d(TAG, "Skipping plugin processed message to avoid loop");
             return;
         }
 
-        ChatMessageEntity entity = ChatMessageFactory.fromCotEvent(event, toUIDs);
+        ChatMessageEntity entity = ChatMessageFactory.fromCotEvent(event, meta);
         if (entity == null) {
             Log.w(TAG, "Failed to create entity from CoT event");
             return;
@@ -149,11 +149,10 @@ public class MessageSyncService {
 
             // Convert to CoT and forward to GeoChat
             CotEvent cotEvent = incomingPluginManager.convertChatMessageToCotEvent(message);
-            Bundle extras = new Bundle();
-            extras.putStringArray("toUIDs", new String[] { message.getReceiverUid() });
             if (cotEvent != null) {
                 if (cotEvent.getDetail() != null) {
-                    incomingPluginManager.sendToGeoChat(cotEvent, extras);
+
+                    incomingPluginManager.sendToGeoChat(cotEvent);
                 }
             }
 
@@ -321,15 +320,12 @@ public class MessageSyncService {
 
         if (inserted) {
             Log.d(TAG, "New PHY message saved: " + message.getMessage());
-            Bundle extras = new Bundle();
-            extras.putStringArray("toUIDs", new String[] { message.getReceiverUid() });
-
             // Convert to CoT and send to GeoChat
             Log.d(TAG, "TEST2-------------------------- ");
             CotEvent event = incomingPluginManager.convertChatMessageToCotEvent(message);
 
             if (event != null) {
-                incomingPluginManager.sendToGeoChat(event, extras);
+                incomingPluginManager.sendToGeoChat(event);
             }
         } else {
             Log.d(TAG, "Duplicate PHY message ignored");

@@ -24,7 +24,7 @@ import java.util.Set;
  *
  *   (1) ATAK → PHY
  *       • Listen to all incoming CoT events except b-t-f (chat)
- *       • Prevent processing loops using __lora tagging
+ *       • Prevent processing loops using __plugin tagging
  *       • Convert CoT XML into GenericCotEntity
  *       • Encode entity to EXI or custom binary format (GenericCotConverter)
  *       • Send encoded payload to Flowgraph (LoRa PHY)
@@ -32,14 +32,14 @@ import java.util.Set;
  *   (2) PHY → ATAK
  *       • Receive raw payloads from Flowgraph via UdpManager
  *       • Decode bytes → GenericCotEntity → CotEvent
- *       • Add __lora tag so ATAK listeners avoid re-sending it
+ *       • Add __plugin tag so ATAK listeners avoid re-sending it
  *       • Dispatch into ATAK’s CotMapComponent to update markers, icons, etc.
  *
  * Persistence:
  *   Every entity is stored in Room (GenericCotRepository) with deduplication.
  *
  * Loop Avoidance:
- *   __lora/origin + originalId ensures that events do not bounce
+ *   __plugin/origin + originalId ensures that events do not bounce
  *   indefinitely between ATAK and PHY.
  */
 public class CotSyncService {
@@ -83,11 +83,11 @@ public class CotSyncService {
      *
      * Pipeline:
      *   - Ignore chat (b-t-f)
-     *   - Skip events already tagged with __lora
+     *   - Skip events already tagged with __plugin
      *   - Convert to GenericCotEntity
      *   - Deduplicate
      *   - Persist to DB
-     *   - Add __lora tag
+     *   - Add __plugin tag
      *   - Encode and send over LoRa
      */
     public void processIncomingCotFromAtak(CotEvent event) {
@@ -97,7 +97,7 @@ public class CotSyncService {
 
         // Loop prevention: skip PHY-origin events
         if (hasLoopTag(event)) {
-            Log.d(TAG, "Skip looped CoT (__lora present)");
+            Log.d(TAG, "Skip looped CoT (__plugin present)");
             return;
         }
 
@@ -170,20 +170,20 @@ public class CotSyncService {
 
     // ------------------ Utility methods ------------------
 
-    /** Check if event already contains a __lora loop-prevention tag */
+    /** Check if event already contains a __plugin loop-prevention tag */
     private static boolean hasLoopTag(CotEvent ev) {
         CotDetail d = ev.getDetail();
-        return d != null && d.getFirstChildByName(0, "__lora") != null;
+        return d != null && d.getFirstChildByName(0, "__plugin") != null;
     }
 
-    /** Attach __lora tag to mark origin and originalId */
+    /** Attach __plugin tag to mark origin and originalId */
     private static CotEvent addLoopTag(CotEvent ev, String origin, String id) {
         CotDetail d = ev.getDetail();
         if (d == null) {
             d = new CotDetail("detail");
             ev.setDetail(d);
         }
-        CotDetail l = new CotDetail("__lora");
+        CotDetail l = new CotDetail("__plugin");
         l.setAttribute("origin", origin);
         l.setAttribute("originalId", id);
         d.addChild(l);

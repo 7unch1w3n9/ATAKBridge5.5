@@ -1,4 +1,3 @@
-
 package com.atakmap.android.LoRaBridge;
 
 import android.app.Activity;

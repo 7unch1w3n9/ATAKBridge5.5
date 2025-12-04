@@ -85,27 +85,30 @@ public class ChatMessageFactory {
      * Direction: GeoChat / CoT → Plugin DB
      *
      * Special handling:
-     *  - If the event contains a "__lora" detail with origin="Plugin"
+     *  - If the event contains a "__plugin" detail with origin="Plugin"
      *    it is treated as a loopback of a message that the plugin
      *    already created, and is ignored (returns null).
-     *  - If "__lora.originalId" is present, it is used as the message id
+     *  - If "__plugin.originalId" is present, it is used as the message id
      *    to support deduplication across LoRa hops.
      *
      * @param event  Incoming CoT event (GeoChat or other chat like message)
-     * @param toUIDs Optional array of target UIDs resolved by caller
+     * @param meta
      * @return A ChatMessageEntity, or null if parsing fails or should be skipped
      */
-    public static ChatMessageEntity fromCotEvent(CotEvent event, String[] toUIDs) {
+    public static ChatMessageEntity fromCotEvent(CotEvent event, Bundle meta) {
         if (event == null) return null;
 
         try {
             String myUid = MapView.getDeviceUid();  // 本机 UID
 
             CotDetail detail = event.getDetail();
+
             CotDetail chatNode = detail.getFirstChildByName(0, "__chat");
-            CotDetail loraNode = detail.getFirstChildByName(0, "__lora");
+            CotDetail loraNode = detail.getFirstChildByName(0, "__plugin");
+
 
             // 检查 origin，忽略插件自己发送的回环消息
+            // Determine origin
             if (loraNode != null && "Plugin".equals(loraNode.getAttribute("origin"))) {
                 return null;
             }
@@ -143,7 +146,6 @@ public class ChatMessageFactory {
                 // 接收者是对方
                 finalReceiverUid = cotReceiverUid;
                 finalReceiverCallsign = chatNode.getAttribute("chatroom");
-
             } else {
                 // 这是对方发送给我的消息
                 finalSenderUid = cotSenderUid;
@@ -152,13 +154,11 @@ public class ChatMessageFactory {
                 // 接收者是我
                 finalReceiverUid = myUid;
                 finalReceiverCallsign = MapView.getMapView().getSelfMarker().getMetaString("callsign", myUid);
-            }
 
-            // 如果 toUIDs 被明确指定，使用它（优先级最高）
-            if (toUIDs != null && toUIDs.length > 0) {
-                finalReceiverUid = toUIDs[0];
+                if (meta.getString("receiverUid") != null) {
+                    finalReceiverUid = meta.getString("receiverUid");
+                }
             }
-
             // 尝试从 Contacts 解析接收者的真实 callsign
             com.atakmap.android.contact.Contact contact =
                     com.atakmap.android.contact.Contacts.getInstance()
@@ -201,7 +201,7 @@ public class ChatMessageFactory {
             }
 
             // 确定 origin
-            String origin = "GeoChat";
+                String  origin = "GeoChat";
             if (loraNode != null) {
                 String loraOrigin = loraNode.getAttribute("origin");
                 if (loraOrigin != null) {

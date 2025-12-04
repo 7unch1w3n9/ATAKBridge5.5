@@ -70,7 +70,6 @@ public final class PluginNativeLoader {
         sLoaded = true;
     }
 
-
     /**
      * Load a library but ignore the harmless "already opened" error.
      *

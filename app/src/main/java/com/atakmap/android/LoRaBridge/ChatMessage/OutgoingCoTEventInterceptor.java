@@ -1,6 +1,7 @@
 package com.atakmap.android.LoRaBridge.ChatMessage;
 
 import android.content.Context;
+import android.os.Bundle;
 
 import com.atakmap.android.LoRaBridge.Database.ChatRepository;
 import com.atakmap.android.LoRaBridge.GenericMessage.CotSyncService;
@@ -64,13 +65,12 @@ public class OutgoingCoTEventInterceptor implements CommsMapComponent.PreSendPro
      */
     @Override
     public void processCotEvent(CotEvent event, String[] toUIDs) {
-        Log.d(TAG, event.toString());
 
         // -------------------------------------
         // Chat messages ("b-t-f")
         // -------------------------------------
         if ("b-t-f".equals(event.getType())) {
-            Log.e(TAG, "PreSend ------------------------------------");
+            Log.w(TAG, "PreSend ------------------------------------");
 
             // Inject sender UID from local device for consistency
             event.getDetail()
@@ -78,7 +78,9 @@ public class OutgoingCoTEventInterceptor implements CommsMapComponent.PreSendPro
                     .setAttribute("sender", MapView.getDeviceUid());
 
             // Process message through the sync service as if it were incoming
-            syncService.processIncomingCotEventFromGeoChat(event, toUIDs);
+            Bundle b = new Bundle();
+            b.putString("receiverUid", toUIDs[0]);
+            syncService.processIncomingCotEventFromGeoChat(event, b);
             return;
         }
 
