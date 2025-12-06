@@ -99,7 +99,10 @@ public class ChatDropDown extends DropDownReceiver {
                 .get(ChatViewModel.class);
 
         // Observe messages for this contact
-        messageObserver = messageAdapter::setMessages;
+        messageObserver = messages -> {
+            messageAdapter.setMessages(messages);
+            scrollToBottom();
+        };
         LiveData<List<ChatMessageEntity>> liveMessages =
                 viewModel.getMessagesForContact(contact.getId());
         liveMessages.observeForever(messageObserver);
@@ -108,6 +111,7 @@ public class ChatDropDown extends DropDownReceiver {
         List<ChatMessageEntity> initial = liveMessages.getValue();
         if (initial != null) {
             messageAdapter.setMessages(initial);
+            scrollToBottom();
         }
 
         // Input and send button
@@ -164,5 +168,12 @@ public class ChatDropDown extends DropDownReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
         // Not used in this dropdown
+    }
+
+    /** Scroll the RecyclerView to the bottom (latest message). */
+    private void scrollToBottom() {
+        if (messageAdapter.getItemCount() > 0) {
+            messageRecycler.scrollToPosition(messageAdapter.getItemCount() - 1);
+        }
     }
 }

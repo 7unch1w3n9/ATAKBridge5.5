@@ -66,25 +66,42 @@ public class IncomingPluginManager {
 
             // Trim all UIDs to avoid whitespace issues
             String senderUid = chat.getAttribute("sender");
+            String senderCallsign = chat.getAttribute("senderCallsign");
             String receiverUid = chat.getAttribute("id");
 
             if (senderUid != null) senderUid = senderUid.trim();
             if (receiverUid != null) receiverUid = receiverUid.trim();
+            if (senderCallsign != null) senderCallsign = senderCallsign.trim();
 
             Log.d(TAG, "========== sendToGeoChat ==========");
             Log.d(TAG, "Sender UID: '" + senderUid + "' (len=" + (senderUid != null ? senderUid.length() : 0) + ")");
             Log.d(TAG, "Receiver UID: '" + receiverUid + "' (len=" + (receiverUid != null ? receiverUid.length() : 0) + ")");
             Log.d(TAG, "My UID: '" + myUid + "' (len=" + myUid.length() + ")");
 
-            // Only create contact when I am the receiver (incoming message)
-            if (receiverUid != null && receiverUid.equals(myUid)) {
-                String senderCallsign = chat.getAttribute("senderCallsign");
-                if (senderCallsign != null) senderCallsign = senderCallsign.trim();
+            // Determine message direction
+            boolean isIncoming;
 
+            /* Case 1: Normal incoming (receiver is me) */
+            if (receiverUid != null && receiverUid.equals(myUid)) {
+                isIncoming = true;
+            }
+
+            /* Case 2: External test device (e.g., HeltecV3)
+             Used when the message is not addressed to me, but clearly comes from the LoRa device */
+            else if (senderUid != null && senderUid.equalsIgnoreCase("HeltecV3")) {
+                Log.d(TAG, "Detected HeltecV3 as sender -> treat as INCOMING test message");
+                isIncoming = true;
+            }
+
+            /* Case 3: Outgoing (normal ATAK behavior) */
+            else {
+                isIncoming = false;
+            }
+
+            if (isIncoming) {
                 ensureContactExists(senderUid, senderCallsign);
                 Log.d(TAG, "✓ INCOMING message from: " + senderCallsign + " (" + senderUid + ")");
             } else {
-                // I am the sender - receiver contact should already exist
                 String chatroom = chat.getAttribute("chatroom");
                 Log.d(TAG, "✓ OUTGOING message to: " + chatroom + " (" + receiverUid + ")");
             }
