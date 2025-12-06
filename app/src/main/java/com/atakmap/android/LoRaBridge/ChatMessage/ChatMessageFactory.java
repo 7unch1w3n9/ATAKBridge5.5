@@ -17,31 +17,33 @@ import java.util.UUID;
 /**
  * ChatMessageFactory
  *
- * Factory for converting between Cursor on Target (CoT) events and the
- * plugin's database entities.
+ * Factory responsible for converting between Cursor-on-Target (CoT) chat events
+ * and the plugin's internal ChatMessageEntity format.
  *
- * Phase 1:
- *   - Bidirectional mapping between GeoChat messages and ChatMessageEntity
- *   - Used for receiving GeoChat and presenting it in the plugin chat UI
- *   - Used for creating new messages from user input
+ * Purpose:
+ *   Phase 1:
+ *     • Provide bidirectional mapping between GeoChat messages and ChatMessageEntity
+ *     • Used for displaying incoming GeoChat messages in the plugin UI
+ *     • Used for creating new messages from user input inside the plugin
  *
- * Phase 2 (planned):
- *   - LoRa specific message identifiers and metadata
+ *   Phase 2 (planned):
+ *     • Introduce LoRa-specific message identifiers and metadata extensions
  */
 public class ChatMessageFactory {
 
     /**
-     * Create a new ChatMessageEntity from user input.
+     * Create a new ChatMessageEntity from user input inside the plugin.
      *
-     * Direction: Plugin UI → Database
+     * Direction: Plugin UI → Local Database
      *
      * @param senderUid        UID of the sender device
      * @param senderCallsign   Callsign of the sender
-     * @param receiverUid      UID of the receiver (for example a contact or room)
+     * @param receiverUid      UID of the receiver (contact or chatroom)
      * @param receiverCallsign Display name of the receiver
-     * @param message          Text content of the message
-     * @param messageType      Message type (for example "text", "alert")
-     * @return A fully initialized ChatMessageEntity with random id and current UTC timestamp
+     * @param message          The text content of the message
+     * @param messageType      Message type such as "text" or "alert"
+     * @return                 Fully populated ChatMessageEntity with a random UUID
+     *                         and timestamp in UTC
      */
     public static ChatMessageEntity fromUserInput(
             String senderUid,
@@ -82,45 +84,41 @@ public class ChatMessageFactory {
     /**
      * Convert a CoT event into a ChatMessageEntity.
      *
-     * Direction: GeoChat / CoT → Plugin DB
+     * Direction: GeoChat / ATAK CoT → Plugin Database
      *
-     * Special handling:
-     *  - If the event contains a "__plugin" detail with origin="Plugin"
-     *    it is treated as a loopback of a message that the plugin
-     *    already created, and is ignored (returns null).
-     *  - If "__plugin.originalId" is present, it is used as the message id
-     *    to support deduplication across LoRa hops.
+     * Behaviour:
+     *   • If the event contains a "__plugin" detail with origin="Plugin",
+     *     it is classified as a loopback message created by the plugin itself.
+     *     Such messages are ignored for display (return null).
      *
-     * @param event  Incoming CoT event (GeoChat or other chat like message)
-     * @param meta
-     * @return A ChatMessageEntity, or null if parsing fails or should be skipped
+     *   • If "__plugin.originalId" exists, it is used as the messageId
+     *     to support deduplication when messages propagate through LoRa hops.
+     *
+     * @param event The CoT event to convert
+     * @param meta  Optional metadata bundle (used by ATAK GeoChat)
+     * @return      A ChatMessageEntity or null if the event should be skipped
      */
     public static ChatMessageEntity fromCotEvent(CotEvent event, Bundle meta) {
         if (event == null) return null;
 
         try {
-            String myUid = MapView.getDeviceUid();  // 本机 UID
+            String myUid = MapView.getDeviceUid(); // local device UID
 
             CotDetail detail = event.getDetail();
-
             CotDetail chatNode = detail.getFirstChildByName(0, "__chat");
             CotDetail loraNode = detail.getFirstChildByName(0, "__plugin");
 
-
-            // 检查 origin，忽略插件自己发送的回环消息
-            // Determine origin
+            // Ignore loopback messages originally created by the plugin
             if (loraNode != null && "Plugin".equals(loraNode.getAttribute("origin"))) {
                 return null;
             }
 
-            // ========== 关键修复：正确提取发送者和接收者 ==========
-
-            // 1. 提取 CoT 中声明的发送者和接收者
+            // ---------- Extract sender and receiver from CoT ----------
             String cotSenderUid = chatNode.getAttribute("sender");
             String cotReceiverUid = chatNode.getAttribute("id");
             String senderCallsign = chatNode.getAttribute("senderCallsign");
 
-            // 如果 sender 字段缺失，尝试从 link 获取
+            // Fallback extraction from <link> if sender is missing
             if (cotSenderUid == null) {
                 CotDetail linkNode = detail.getFirstChildByName(0, "link");
                 if (linkNode != null) {
@@ -128,8 +126,9 @@ public class ChatMessageFactory {
                 }
             }
 
-            // 2. 判断消息方向
-            boolean isOutgoing = cotSenderUid != null && cotSenderUid.equals(myUid);
+            // Determine direction: outgoing if I am the sender
+            boolean isOutgoing =
+                    cotSenderUid != null && cotSenderUid.equals(myUid);
 
             String finalSenderUid;
             String finalSenderCallsign;
@@ -137,29 +136,31 @@ public class ChatMessageFactory {
             String finalReceiverCallsign;
 
             if (isOutgoing) {
-                // 这是我发送的消息（可能是回环）
+                // I sent this message
                 finalSenderUid = myUid;
                 finalSenderCallsign = senderCallsign != null
                         ? senderCallsign
                         : MapView.getMapView().getSelfMarker().getMetaString("callsign", myUid);
 
-                // 接收者是对方
                 finalReceiverUid = cotReceiverUid;
                 finalReceiverCallsign = chatNode.getAttribute("chatroom");
+
             } else {
-                // 这是对方发送给我的消息
+                // Received from someone else
                 finalSenderUid = cotSenderUid;
                 finalSenderCallsign = senderCallsign != null ? senderCallsign : cotSenderUid;
 
-                // 接收者是我
                 finalReceiverUid = myUid;
-                finalReceiverCallsign = MapView.getMapView().getSelfMarker().getMetaString("callsign", myUid);
+                finalReceiverCallsign =
+                        MapView.getMapView().getSelfMarker().getMetaString("callsign", myUid);
 
+                // GeoChat sometimes sends explicit override for receiver
                 if (meta.getString("receiverUid") != null) {
                     finalReceiverUid = meta.getString("receiverUid");
                 }
             }
-            // 尝试从 Contacts 解析接收者的真实 callsign
+
+            // Try resolving receiver callsign through ATAK Contacts
             com.atakmap.android.contact.Contact contact =
                     com.atakmap.android.contact.Contacts.getInstance()
                             .getContactByUuid(finalReceiverUid);
@@ -167,26 +168,25 @@ public class ChatMessageFactory {
                 finalReceiverCallsign = contact.getName();
             }
 
-            // 提取消息内容
+            // Extract message text from <remarks>
             String message = null;
             CotDetail remarksNode = detail.getFirstChildByName(0, "remarks");
             if (remarksNode != null) {
                 message = remarksNode.getInnerText();
             }
 
-            // 提取消息 ID
+            // Extract message ID
             String messageId = chatNode.getAttribute("messageId");
-            if (messageId == null) {
-                if (loraNode != null) {
-                    messageId = loraNode.getAttribute("originalId");
-                }
+            if (messageId == null && loraNode != null) {
+                messageId = loraNode.getAttribute("originalId");
             }
             if (messageId == null) {
                 messageId = event.getUID();
             }
 
-            // 提取时间戳
-            SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
+            // Format timestamp in UTC
+            SimpleDateFormat sdf =
+                    new SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSS'Z'", Locale.US);
             sdf.setTimeZone(TimeZone.getTimeZone("UTC"));
             String timestamp = sdf.format(
                     event.getTime() != null
@@ -194,22 +194,18 @@ public class ChatMessageFactory {
                             : new Date()
             );
 
-            // 提取消息类型
+            // Determine message type
             String messageType = chatNode.getAttribute("messageType");
-            if (messageType == null) {
-                messageType = "text";
-            }
+            if (messageType == null) messageType = "text";
 
-            // 确定 origin
-                String  origin = "GeoChat";
+            // Determine origin
+            String origin = "GeoChat";
             if (loraNode != null) {
                 String loraOrigin = loraNode.getAttribute("origin");
-                if (loraOrigin != null) {
-                    origin = loraOrigin;
-                }
+                if (loraOrigin != null) origin = loraOrigin;
             }
 
-            // 详细日志输出
+            // Debug logging
             Log.d("ChatMessageFactory", "========== fromCotEvent ==========");
             Log.d("ChatMessageFactory", "My UID: " + myUid);
             Log.d("ChatMessageFactory", "CoT sender: " + cotSenderUid);
@@ -240,7 +236,13 @@ public class ChatMessageFactory {
     }
 
     /**
-     * Convert a Bundle (from GeoChat) into ChatMessageEntity
+     * Convert a GeoChat Bundle into ChatMessageEntity.
+     *
+     * Used when GeoChat delivers chat updates via an Android Bundle rather
+     * than a raw CoT event.
+     *
+     * @param bundle The incoming GeoChat message bundle
+     * @return       Converted ChatMessageEntity or null on failure
      */
     public static ChatMessageEntity fromBundle(Bundle bundle) {
         try {
