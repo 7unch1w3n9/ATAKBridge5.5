@@ -1,0 +1,7 @@
+services:
+  android-builder:
+    build: .
+    volumes:
+#      - ./build:/build
+#      - ./third_party:/src
+      - ../app/src/main/jniLibs:/out
